@@ -6,6 +6,7 @@ import uuid
 import asyncio
 import logging
 import json
+from datetime import datetime
 
 from ..middleware.auth import verify_token
 from ..services.redis_service import RedisService
@@ -16,7 +17,7 @@ from ..services.supabase_service import SupabaseService
 from ..services.ai_service import ai_service
 from ..models.generation import GenerationRequest, GenerationResponse, NaturalLanguageRequest, SchemaGenerationResponse
 
-router = APIRouter()
+router = APIRouter(prefix="/api/generation", tags=["generation"])
 security = HTTPBearer()
 
 # Initialize services
@@ -59,16 +60,25 @@ async def generate_schema_from_description(
         
         logger.info(f"✅ Request validated successfully")
         
-        # Generate schema using Gemini - NO FALLBACKS
-        logger.info("🔄 Calling Gemini service for schema generation...")
+        # Generate schema using configured AI service first, then fallback to Gemini
+        logger.info("🔄 Calling AI service for schema generation...")
         try:
-            schema_result = await gemini_service.generate_schema_from_natural_language(
-                request.description,
-                request.domain,
-                request.data_type
-            )
+            if ai_service.is_initialized:
+                logger.info(f"🤖 Using configured AI service: {ai_service.current_provider}")
+                schema_result = await ai_service.generate_schema_from_natural_language(
+                    request.description,
+                    request.domain,
+                    request.data_type
+                )
+            else:
+                logger.info("🤖 Using Gemini service as fallback")
+                schema_result = await gemini_service.generate_schema_from_natural_language(
+                    request.description,
+                    request.domain,
+                    request.data_type
+                )
         except Exception as e:
-            logger.error(f"❌ Gemini schema generation failed: {str(e)}")
+            logger.error(f"❌ Schema generation failed: {str(e)}")
             raise HTTPException(
                 status_code=503, 
                 detail=f"AI schema generation failed: {str(e)}. Please check API configuration or try again later."
@@ -336,65 +346,50 @@ async def generate_local_data(
     request: Dict[str, Any],
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    """Generate synthetic data locally - REAL AI GENERATION ONLY"""
-    logger.info("🏠 Local generation request")
+    """Generate enterprise-grade synthetic data using configured AI service or orchestrator"""
+    schema = request.get('schema', {})
+    config = request.get('config', {})
+    description = request.get('description', '')
+    source_data = request.get('sourceData', [])
     
     try:
-        schema = request.get('schema', {})
-        config = request.get('config', {})
-        description = request.get('description', '')
-        
-        # Cap row count at 100 for quota management
-        row_count = min(config.get('rowCount', 100), 100)
-        config['rowCount'] = row_count
-        
-        logger.info(f"📊 Local generation: {len(schema)} fields, {row_count} rows (capped at 100)")
-        
-        # ONLY use real AI generation - NO FALLBACKS
-        try:
-            if ai_service.is_initialized:
-                logger.info(f"🤖 Using configured AI service: {ai_service.current_provider}")
-                synthetic_data = await ai_service.generate_synthetic_data_advanced(
-                    schema, config, description
-                )
-            else:
-                logger.info("🤖 Using Gemini service")
-                synthetic_data = await gemini_service.generate_synthetic_data(
-                    schema, config, description
-                )
-        except Exception as e:
-            logger.error(f"❌ AI generation failed: {str(e)}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"AI generation failed: {str(e)}. Please check API configuration, quota, or try again later."
+        # If AI service is configured, use it directly for faster generation
+        if ai_service.is_initialized:
+            logger.info(f"🎯 Using configured AI service: {ai_service.current_provider}")
+            result = await ai_service.generate_synthetic_data_advanced(
+                schema=schema,
+                config=config,
+                description=description
             )
+            
+            return {
+                "data": result,
+                "metadata": {
+                    "generation_time": datetime.utcnow().isoformat(),
+                    "ai_provider": ai_service.current_provider,
+                    "generation_method": "ai_real_time"
+                },
+                "message": f"Generated using {ai_service.current_provider}",
+                "records_generated": len(result),
+                "provider": ai_service.current_provider,
+                "model": ai_service.current_model
+            }
+        else:
+            # Fallback to orchestrator with Ollama
+            logger.info("🔄 Using agent orchestrator as fallback")
+            job_id = str(uuid.uuid4())
+            result = await orchestrator.orchestrate_generation(
+                job_id=job_id,
+                source_data=source_data,
+                schema=schema,
+                config=config,
+                description=description,
+                websocket_manager=None
+            )
+            return result
         
-        # Calculate realistic quality metrics
-        quality_score = min(100, max(85, len(synthetic_data) / max(1, row_count) * 100))
-        privacy_score = 95  # High privacy for synthetic data
-        bias_score = 88    # Good bias score for AI-generated data
-        
-        logger.info(f"✅ Local generation completed: {len(synthetic_data)} realistic records")
-        
-        return {
-            "data": synthetic_data,
-            "metadata": {
-                "rowsGenerated": len(synthetic_data),
-                "columnsGenerated": len(synthetic_data[0].keys()) if synthetic_data else 0,
-                "generationTime": "2025-01-01T00:00:00",
-                "config": config,
-                "generationMethod": "ai_real_time",
-                "ai_provider": "gemini_2_flash" if not ai_service.is_initialized else ai_service.current_provider
-            },
-            "qualityScore": quality_score,
-            "privacyScore": privacy_score,
-            "biasScore": bias_score
-        }
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ Local generation failed: {str(e)}")
+        logger.error(f"Generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 async def run_generation_job(job_id: str, user_id: str, config: Dict[str, Any]):
