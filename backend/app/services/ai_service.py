@@ -296,8 +296,16 @@ class AIService:
     async def _generate_schema_ollama(self, prompt: str) -> Dict[str, Any]:
         """Generate schema using Ollama"""
         if hasattr(self, '_ollama_service') and self._ollama_service.is_initialized:
+            # Extract description from prompt properly
+            description = "user profile data"
+            if 'Description: "' in prompt:
+                try:
+                    description = prompt.split('Description: "')[1].split('"')[0]
+                except:
+                    pass
+            
             return await self._ollama_service.generate_schema_from_natural_language(
-                prompt.split('Description: "')[1].split('"')[0] if 'Description: "' in prompt else "user profile data",
+                description,
                 "general",
                 "tabular"
             )

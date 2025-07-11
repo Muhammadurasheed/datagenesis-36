@@ -168,20 +168,19 @@ async def test_ai_connection():
                 detail="AI service not configured"
             )
         
-        # For Ollama, use a much simpler test to avoid memory issues
+        # For Ollama, use the configured AI service directly
         if ai_service.current_provider == 'ollama':
-            # Import the Ollama service to test simple connection
-            from ..services.ollama_service import OllamaService
-            ollama_service = OllamaService(ai_service.endpoint or 'http://localhost:11434')
-            ollama_service.configure_model(ai_service.current_model, ai_service.endpoint)
-            
             try:
-                # Just test basic health check first (no model loading)
-                health_result = await ollama_service.health_check()
+                # First test basic health check
+                health_result = await ai_service.health_check()
                 
                 if health_result.get("status") == "online":
-                    # Try a very simple, short completion to verify model works
-                    test_response = await ollama_service.generate_completion("Hi")
+                    # Try a simple schema generation test to verify model works
+                    test_result = await ai_service.generate_schema_from_natural_language(
+                        description="A simple user profile with name and email",
+                        domain="general",
+                        data_type="tabular"
+                    )
                     
                     return {
                         "status": "success",
@@ -190,9 +189,8 @@ async def test_ai_connection():
                         "model": ai_service.current_model,
                         "test_result": {
                             "health_status": "online",
-                            "response_received": bool(test_response),
-                            "response_length": len(test_response) if test_response else 0,
-                            "sample_response": test_response[:50] + "..." if len(test_response) > 50 else test_response
+                            "fields_generated": len(test_result.get('schema', {})),
+                            "detected_domain": test_result.get('detected_domain', 'unknown')
                         }
                     }
                 else:

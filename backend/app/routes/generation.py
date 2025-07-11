@@ -344,13 +344,28 @@ async def analyze_data(
 @router.post("/generate-local")
 async def generate_local_data(
     request: Dict[str, Any],
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """Generate enterprise-grade synthetic data using configured AI service or orchestrator"""
+    logger.info("🎯 Local generation request received")
+    
+    # Allow both authenticated users and guests
+    user = None
+    if credentials:
+        try:
+            user = await verify_token(credentials.credentials)
+            logger.info(f"👤 User authenticated: {user.get('id', 'unknown')}")
+        except Exception as e:
+            logger.info(f"🔓 Guest access detected: {str(e)}")
+    else:
+        logger.info("🔓 No credentials provided, allowing guest access")
+    
     schema = request.get('schema', {})
     config = request.get('config', {})
     description = request.get('description', '')
     source_data = request.get('sourceData', [])
+    
+    logger.info(f"📊 Generation config: {len(schema)} fields, {config.get('rowCount', 0)} rows requested")
     
     try:
         # If AI service is configured, use it directly for faster generation
